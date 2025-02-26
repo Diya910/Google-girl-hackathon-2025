@@ -1,9 +1,56 @@
+import argparse
 import torch
 import dgl
+from pyverilog.vparser.parser import parse
+
+def parse_verilog(file_path):
+    ast, directives = parse([file_path])
+    description = ast.description
+    modules = [item for item in description.definitions if hasattr(item, 'name')]
+    if not modules:
+        raise ValueError("No module found in the Verilog file.")
+    top_module = modules[0]
+    return top_module
+
+def extract_nets_and_instances(module):
+    nets = set()
+    instances = []
+
+    if hasattr(module, 'portlist') and module.portlist is not None:
+        for port in module.portlist.ports:
+            if hasattr(port, "first") and port.first is not None:
+                nets.add(port.first.name)
+            else:
+                nets.add(port.name)
+
+    for item in module.items:
+        if item.__class__.__name__ == 'Decl':
+            for subitem in item.list:
+                if subitem.__class__.__name__ == 'Wire':
+                    nets.add(subitem.name)
+    
+    for item in module.items:
+        if item.__class__.__name__ == 'InstanceList':
+            for inst in item.instances:
+                conn_dict = {}
+                for portarg in inst.portlist:
+                    port_name = portarg.portname
+                    if hasattr(portarg.argname, 'name'):
+                        signal = portarg.argname.name
+                    else:
+                        signal = str(portarg.argname)
+                    conn_dict[port_name] = signal
+                    nets.add(signal)
+                instances.append({
+                    'module': item.module,
+                    'instance': inst.name,
+                    'connections': conn_dict
+                })
+    return list(nets), instances
 
 def build_graph(nets, instances):
     net_nodes = {net: idx for idx, net in enumerate(nets)}
-    instance_nodes = {inst['instance']: idx for idx, inst in enumerate(instances)}
+    instance_nodes = {inst['instance']: idx for idx, inst in enumerate(instances)}  # Fix here
 
     num_net_nodes = len(nets)
     num_instance_nodes = len(instances)
@@ -12,42 +59,16 @@ def build_graph(nets, instances):
 
     net_out_src, net_out_dst = [], []
     cell_out_src, cell_out_dst = [], []
-    
-    # Track fanout for each net
-    fanout_count = {net: 0 for net in nets}
-    
-    # Track gate types and their typical delays
-    gate_delays = {
-        'buf': 0.1,
-        'and': 0.15,
-        'or': 0.15,
-        'nand': 0.12,
-        'nor': 0.12,
-        'not': 0.08,
-        'xor': 0.2,
-        'xnor': 0.2,
-        'dff': 0.25
-    }
 
     for inst in instances:
         if inst['instance'] not in instance_nodes:
             continue
         inst_idx = instance_nodes[inst['instance']]
-        
-        # Determine gate type from instance name
-        gate_type = 'buf'  # default
-        for gtype in gate_delays.keys():
-            if gtype in inst['module'].lower():
-                gate_type = gtype
-                break
 
         for port, net in inst['connections'].items():
             if net not in net_nodes:
                 continue
             net_idx = net_nodes[net]
-            
-            # Count fanout for each net
-            fanout_count[net] += 1
 
             if port.upper() == 'A':
                 net_out_src.append(net_idx)
@@ -61,6 +82,9 @@ def build_graph(nets, instances):
                 cell_out_src.append(inst_idx)
                 cell_out_dst.append(net_idx)
 
+    print(f"Max net ID: {max(net_out_src + net_out_dst, default=0)}")
+    print(f"Max instance ID: {max(cell_out_src + cell_out_dst, default=0)}")
+
     data_dict = {
         ('net', 'net_out', 'cell'): (torch.tensor(net_out_src, dtype=torch.int64),
                                      torch.tensor(net_out_dst, dtype=torch.int64)),
@@ -69,74 +93,37 @@ def build_graph(nets, instances):
     }
 
     hg = dgl.heterograph(data_dict, num_nodes_dict={'net': num_net_nodes, 'cell': num_instance_nodes})
-    g = dgl.to_homogeneous(hg)
-    
-    # Generate more realistic features
-    num_total_nodes = g.num_nodes()
-    
-    # Node features based on connectivity
-    node_features = []
-    for i in range(num_total_nodes):
-        if i < num_net_nodes:  # Net nodes
-            net_name = list(net_nodes.keys())[list(net_nodes.values()).index(i)]
-            fo = fanout_count[net_name]
-            # Features: [is_net, is_cell, fanout, level, capacitance, ...]
-            features = [1, 0, fo/max(fanout_count.values()), 0.5, 0.3] + [0]*5
-        else:  # Cell nodes
-            inst_name = list(instance_nodes.keys())[list(instance_nodes.values()).index(i-num_net_nodes)]
-            gate_type = 'buf'
-            for gtype in gate_delays.keys():
-                if gtype in instances[i-num_net_nodes]['module'].lower():
-                    gate_type = gtype
-                    break
-            # Features: [is_net, is_cell, gate_delay, drive_strength, ...]
-            features = [0, 1, gate_delays[gate_type], 0.8, 0.4] + [0]*5
-        node_features.append(features)
-    
-    g.ndata['nf'] = torch.tensor(node_features, dtype=torch.float32)
-    
-    # Generate timing-related features
-    base_delay = torch.tensor([gate_delays['buf']], dtype=torch.float32)
-    variation = torch.randn(num_total_nodes, 1) * 0.1  # 10% variation
-    g.ndata['n_net_delays'] = torch.abs(base_delay + variation)
-    
-    # Generate arrival times based on topological levels
-    g.ndata['n_ats'] = torch.zeros(num_total_nodes, 1)
-    for i in range(num_total_nodes):
-        in_edges = g.in_edges(i)[0]
-        if len(in_edges) > 0:
-            prev_delays = g.ndata['n_net_delays'][in_edges]
-            g.ndata['n_ats'][i] = torch.max(prev_delays) + g.ndata['n_net_delays'][i]
-    
-    # Generate slews based on gate types and fanout
-    g.ndata['n_slews'] = torch.abs(g.ndata['n_net_delays'] * (1 + variation))
-    
-    # Timing endpoints
-    g.ndata['n_is_timing_endpt'] = torch.zeros(num_total_nodes, 1)
-    out_degrees = g.out_degrees()
-    g.ndata['n_is_timing_endpt'][out_degrees == 0] = 1
-    
-    # Edge features
-    num_edges = g.num_edges()
-    edge_features = torch.zeros(num_edges, 512)
-    for i in range(num_edges):
-        src, dst = g.edges()[0][i], g.edges()[1][i]
-        # Basic edge features based on source and destination nodes
-        edge_features[i, 0] = g.ndata['n_net_delays'][src]
-        edge_features[i, 1] = g.ndata['n_net_delays'][dst]
-        # Add more meaningful edge features (first 10 elements)
-        edge_features[i, 2:10] = torch.tensor([
-            g.ndata['nf'][src][2],  # fanout/gate_delay
-            g.ndata['nf'][dst][2],  # fanout/gate_delay
-            g.ndata['n_ats'][src],  # arrival time at source
-            g.ndata['n_slews'][src],  # slew at source
-            g.in_degrees(src),  # in-degree of source
-            g.out_degrees(src),  # out-degree of source
-            g.in_degrees(dst),  # in-degree of destination
-            g.out_degrees(dst),  # out-degree of destination
-        ])
-    
-    g.edata['ef'] = edge_features
-    g.edata['e_cell_delays'] = torch.abs(torch.randn(num_edges, 4) * 0.1 + 0.2)  # More realistic cell delays
 
-    return g 
+    g = dgl.to_homogeneous(hg)
+
+    num_total_nodes = g.num_nodes()
+    g.ndata['nf'] = torch.randn(num_total_nodes, 10)
+    g.ndata['n_net_delays'] = torch.abs(torch.randn(num_total_nodes, 1))
+    g.ndata['n_ats'] = torch.randn(num_total_nodes, 1)
+    g.ndata['n_slews'] = torch.abs(torch.randn(num_total_nodes, 1))
+    g.ndata['n_is_timing_endpt'] = torch.randint(0, 2, (num_total_nodes, 1)).float()
+
+    num_edges = g.num_edges()
+    g.edata['ef'] = torch.randn(num_edges, 512)
+    g.edata['e_cell_delays'] = torch.randn(num_edges, 4)
+
+    return g
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Convert a Verilog RTL file to a DGL graph binary file for timing analysis")
+    parser.add_argument('--verilog', type=str, required=True, help="Path to the Verilog RTL file (e.g., test.v)")
+    parser.add_argument('--output', type=str, default="test.graph.bin", help="Output graph binary filename")
+    args = parser.parse_args()
+    
+    top_module = parse_verilog(args.verilog)
+    nets, instances = extract_nets_and_instances(top_module)
+    print("Extracted nets:", nets)
+    print("Extracted instances:", instances)
+    
+    g = build_graph(nets, instances)
+    dgl.save_graphs(args.output, [g])
+    print(f"Graph saved to {args.output}")
+
+if __name__ == '__main__':
+    main()

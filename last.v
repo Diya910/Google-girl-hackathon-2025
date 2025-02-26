@@ -16,116 +16,26 @@ module crypto_processor (
     input [4:0] rounds
 );
 
-    // Internal wires
-    wire _00000_;
-    wire _00001_;
-    wire _00002_;
-    wire _00003_;
-    wire _00004_;
-    wire _00005_;
-    wire _00006_;
-    wire _00007_;
-    wire _00008_;
-    wire _00009_;
-    wire _00010_;
-    wire _00011_;
-    wire _00012_;
-    wire _00013_;
-    wire _00014_;
-    wire _00015_;
-    wire _00016_;
-    wire _00017_;
-    wire _00018_;
-    wire _00019_;
-    wire _00020_;
-    wire _00021_;
-    wire _00022_;
-
-    // Internal nets
-    wire net1440;
-    wire net1441;
-    wire net1442;
-    wire net1443;
-    wire net1444;
-    wire net1445;
-    wire net1446;
-    wire net1447;
-    wire net898;
-
+    // Internal registers with higher complexity
+    reg [7:0] buffer [0:255];
     reg [2:0] ctrl_reg;
+    integer i;
 
-    sky130_fd_sc_hd__buf_12 repeater1440 (
-        .A(net1442),
-        .X(net1440),
-        .VGND(VGND),
-        .VNB(VGND),
-        .VPB(VPWR),
-        .VPWR(VPWR)
-    );
+    // Extra internal buffers for added delay
+    wire net1500, net1501, net1502, net1503, net1504;
+    wire net1505, net1506, net1507, net1508, net1509;
 
-    sky130_fd_sc_hd__buf_12 repeater1441 (
-        .A(net1442),
-        .X(net1441),
-        .VGND(VGND),
-        .VNB(VGND),
-        .VPB(VPWR),
-        .VPWR(VPWR)
-    );
+    sky130_fd_sc_hd__buf_12 repeater1500 (.A(net1501), .X(net1500), .VGND(VGND), .VNB(VGND), .VPB(VPWR), .VPWR(VPWR));
+    sky130_fd_sc_hd__buf_12 repeater1501 (.A(net1502), .X(net1501), .VGND(VGND), .VNB(VGND), .VPB(VPWR), .VPWR(VPWR));
+    sky130_fd_sc_hd__buf_12 repeater1502 (.A(ctrl_reg[2]), .X(net1502), .VGND(VGND), .VNB(VGND), .VPB(VPWR), .VPWR(VPWR));
+    sky130_fd_sc_hd__buf_12 repeater1503 (.A(net1505), .X(net1503), .VGND(VGND), .VNB(VGND), .VPB(VPWR), .VPWR(VPWR));
+    sky130_fd_sc_hd__buf_12 repeater1504 (.A(net1505), .X(net1504), .VGND(VGND), .VNB(VGND), .VPB(VPWR), .VPWR(VPWR));
 
-    sky130_fd_sc_hd__buf_12 repeater1442 (
-        .A(ctrl_reg[2]),
-        .X(net1442),
-        .VGND(VGND),
-        .VNB(VGND),
-        .VPB(VPWR),
-        .VPWR(VPWR)
-    );
-
-    sky130_fd_sc_hd__buf_12 repeater1443 (
-        .A(net1445),
-        .X(net1443),
-        .VGND(VGND),
-        .VNB(VGND),
-        .VPB(VPWR),
-        .VPWR(VPWR)
-    );
-
-    sky130_fd_sc_hd__buf_12 repeater1444 (
-        .A(net1445),
-        .X(net1444),
-        .VGND(VGND),
-        .VNB(VGND),
-        .VPB(VPWR),
-        .VPWR(VPWR)
-    );
-
-    sky130_fd_sc_hd__buf_12 repeater1445 (
-        .A(ctrl_reg[2]),
-        .X(net1445),
-        .VGND(VGND),
-        .VNB(VGND),
-        .VPB(VPWR),
-        .VPWR(VPWR)
-    );
-
-    sky130_fd_sc_hd__clkbuf_16 repeater1446 (
-        .A(net1447),
-        .X(net1446),
-        .VGND(VGND),
-        .VNB(VGND),
-        .VPB(VPWR),
-        .VPWR(VPWR)
-    );
-
-    sky130_fd_sc_hd__clkbuf_16 repeater1447 (
-        .A(net898),
-        .X(net1447),
-        .VGND(VGND),
-        .VNB(VGND),
-        .VPB(VPWR),
-        .VPWR(VPWR)
-    );
-
+    sky130_fd_sc_hd__clkbuf_16 repeater1505 (.A(net1506), .X(net1505), .VGND(VGND), .VNB(VGND), .VPB(VPWR), .VPWR(VPWR));
+    sky130_fd_sc_hd__clkbuf_16 repeater1506 (.A(net1507), .X(net1506), .VGND(VGND), .VNB(VGND), .VPB(VPWR), .VPWR(VPWR));
+    sky130_fd_sc_hd__clkbuf_16 repeater1507 (.A(net1508), .X(net1507), .VGND(VGND), .VNB(VGND), .VPB(VPWR), .VPWR(VPWR));
+    sky130_fd_sc_hd__clkbuf_16 repeater1508 (.A(net1509), .X(net1508), .VGND(VGND), .VNB(VGND), .VPB(VPWR), .VPWR(VPWR));
+    
     always @(posedge clk or negedge reset_n) begin
         if (!reset_n) begin
             ctrl_reg <= 3'b000;
@@ -136,9 +46,15 @@ module crypto_processor (
         end
     end
 
+    // Artificial delay loop to increase complexity
+    always @(posedge clk) begin
+        for (i = 0; i < 256; i = i + 1) begin
+            buffer[i] <= buffer[i] ^ key[i%256];
+        end
+    end
+
     assign ready = (ctrl_reg == 3'b111);
     assign data_out_valid = (ctrl_reg == 3'b110);
-
     assign data_out = data_in ^ {key, key};
 
 endmodule
