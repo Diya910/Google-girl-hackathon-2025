@@ -20,6 +20,9 @@ Welcome to the RTL to Timing Analysis Pipeline! This project leverages advanced 
 
 This project aims to provide a robust framework for timing analysis of digital circuits. By converting RTL Verilog code and circuit images into a graph structure, we can leverage GNNs to predict timing delays with high accuracy. The pipeline supports various input formats and uses the Gemini API for AI-driven conversion of circuit images to Verilog code.
 
+## Working Prototype Link
+[Youtube Video](https://youtu.be/5evgnSyFDfE?si=QgciABWAPhWdhCXj)
+
 ## Installation
 
 To get started, ensure you have Python 3.10 installed. This version is chosen for its compatibility with the machine learning libraries and features.
